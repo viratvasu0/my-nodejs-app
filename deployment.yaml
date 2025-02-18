@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-nodejs-app
+  labels:
+    app: my-nodejs-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-nodejs-app
+  template:
+    metadata:
+      labels:
+        app: my-nodejs-app
+    spec:
+      containers:
+        - name: my-nodejs-app
+          image: <ECR-REPO-URL>/my-nodejs-app:v1
+          ports:
+            - containerPort: 3000
