@@ -1,0 +1,145 @@
+name: csd-ocs-appsync-build
+
+on:
+  push:
+    branches:
+      - development/**
+  workflow_dispatch:
+
+env:
+  APP_DIR: ocs-appsync-api
+  AWS_REGION: us-east-1
+
+concurrency:
+  group: csd-ocs-appsync-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-test-sonar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.15.0
+          cache: 'npm'
+          cache-dependency-path: ocs-appsync-api/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: npm install
+
+      - name: Run Tests
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run test
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v2
+        with:
+          projectBaseDir: ocs-appsync-api
+        env:
+          SONAR_HOST_URL: https://sonarqube.wm.com/
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # Cache node_modules for next job
+      - name: Cache Build Artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ${{ env.APP_DIR }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('ocs-appsync-api/package-lock.json') }}
+
+  deploy:
+    needs: build-test-sonar
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write   # Required for OIDC
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Restore Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ${{ env.APP_DIR }}/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('ocs-appsync-api/package-lock.json') }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.15.0
+
+      - name: Install Dependencies (Fallback)
+        working-directory: ${{ env.APP_DIR }}
+        run: npm install
+
+      # 🔐 OIDC Role Assumption (Aligned with Smart Coaching)
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::062209676060:role/buildpiper-csd-dev-deploy-role
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      # 🔍 Debug identity (very useful)
+      - name: Verify AWS Identity
+        run: aws sts get-caller-identity
+
+      # 🚀 CDK Deploy - Phase 1
+      - name: CDK Deploy (Without Resolvers)
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npx cdk deploy \
+          -c configfile=config/config_file-sit1.json \
+          --require-approval never \
+          --region $AWS_REGION \
+          --context WithResolvers=false
+
+      # 🚀 CDK Deploy - Phase 2
+      - name: CDK Deploy (With Resolvers)
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npx cdk deploy \
+          -c configfile=config/config_file-sit1.json \
+          --require-approval never \
+          --region $AWS_REGION \
+          --context WithResolvers=true
+
+      # 🏷️ Safe Git Tagging
+      - name: Create Git Tag
+        run: |
+          TAG=$(date +'%Y%m.%d.%H%M')
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists, skipping"
+          else
+            git tag $TAG
+            git push origin $TAG
+          fi
+
+  notify:
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Notify Teams
+        run: |
+          STATUS="${{ job.status }}"
+          curl -H "Content-Type: application/json" \
+          -d "{
+            \"text\": \"Build ${STATUS} for csd-ocs-appsync-build\"
+          }" \
+          "${{ secrets.MS_TEAMS_WEBHOOK }}"
