@@ -1,4 +1,4 @@
-name: Build Push and Tag
+name: Build Push and Tag (CST)
 
 on:
   push:
@@ -23,15 +23,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Generate dynamic tag (DD-MM-YYYY-HHMM)
-      - name: Generate tag
+      # 2. Generate CST-based tag (DD-MM-YYYY-HHMM)
+      - name: Generate CST tag
         id: tag
         run: |
-          TAG=$(date +"%d-%m-%Y-%H%M")
+          TAG=$(TZ="America/Chicago" date +"%d-%m-%Y-%H%M")
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      # 3. Log in to GHCR
+      # 3. Login to GitHub Container Registry
       - name: Login to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
