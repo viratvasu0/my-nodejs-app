@@ -28,7 +28,7 @@ jobs:
       - name: Generate CST tag
         id: tag
         run: |
-          TAG=$(TZ="America/Chicago" date +"%d-%m-%Y-%H%M%S")
+          TAG=$(TZ="America/Chicago" date +"%d-%m-%Y-%H%M")
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
