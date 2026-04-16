@@ -1,0 +1,58 @@
+name: Build Push and Tag
+
+on:
+  push:
+    branches:
+      - main
+      - development
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-push-tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Generate dynamic tag (DD-MM-YYYY-HHMM)
+      - name: Generate tag
+        id: tag
+        run: |
+          TAG=$(date +"%d-%m-%Y-%H%M")
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      # 3. Log in to GHCR
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # 4. Build Docker image
+      - name: Build Docker image
+        run: |
+          docker build -t $REGISTRY/${{ github.repository }}:${{ env.TAG }} .
+
+      # 5. Push Docker image
+      - name: Push Docker image
+        run: |
+          docker push $REGISTRY/${{ github.repository }}:${{ env.TAG }}
+
+      # 6. Configure Git
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      # 7. Create Git tag (same commit)
+      - name: Create Git tag
+        run: |
+          git tag -a "${{ env.TAG }}" -m "Auto tag ${{ env.TAG }}"
+          git push origin "${{ env.TAG }}"
