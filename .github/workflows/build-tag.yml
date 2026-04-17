@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Checkout code
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -32,34 +31,28 @@ jobs:
           echo "TAG=$TAG" >> $GITHUB_ENV
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      # 3. Login to GitHub Container Registry
       - name: Login to GHCR
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      # 4. Build Docker image
       - name: Build Docker image
         run: |
           docker build -t $REGISTRY/${{ github.repository }}:${{ env.TAG }} .
 
-      # 5. Push Docker image
       - name: Push Docker image
         run: |
           docker push $REGISTRY/${{ github.repository }}:${{ env.TAG }}
 
-      # 6. (Optional) Tag as latest
       - name: Tag as latest
         run: |
           docker tag $REGISTRY/${{ github.repository }}:${{ env.TAG }} $REGISTRY/${{ github.repository }}:latest
           docker push $REGISTRY/${{ github.repository }}:latest
 
-      # 7. Configure Git
       - name: Configure Git
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-      # 8. Create Git tag (same commit)
       - name: Create Git tag
         run: |
           git tag -a "${{ env.TAG }}" -m "Auto tag ${{ env.TAG }}"
