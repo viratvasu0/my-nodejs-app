@@ -1,0 +1,130 @@
+name: Manual Email Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      component_name:
+        description: "Application Name"
+        required: true
+        default: "my-nodejs-app"
+
+      environment:
+        description: "Environment"
+        required: true
+        default: "dev"
+
+      status:
+        description: "Status (SUCCESS / FAILED)"
+        required: true
+        default: "SUCCESS"
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set Variables
+        run: |
+          echo "COMPONENT_NAME=${{ github.event.inputs.component_name }}" >> $GITHUB_ENV
+          echo "ENV=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+          echo "STATUS=${{ github.event.inputs.status }}" >> $GITHUB_ENV
+
+      - name: Set Status Color
+        run: |
+          if [ "${STATUS}" = "SUCCESS" ]; then
+            echo "STATUS_COLOR=#28a745" >> $GITHUB_ENV
+          else
+            echo "STATUS_COLOR=#d73a49" >> $GITHUB_ENV
+          fi
+
+      - name: Send Email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "Manual Notification: ${{ env.COMPONENT_NAME }} - ${{ env.STATUS }}"
+          to: ${{ secrets.MAIL_USERNAME }}
+          from: GitHub Actions
+          content_type: text/html
+
+          body: |
+            <!DOCTYPE html>
+            <html>
+            <body style="margin:0; padding:0; background-color:#f4f4f4; font-family:Segoe UI, Roboto, Arial, sans-serif;">
+
+              <table width="100%" cellpadding="0" cellspacing="0" border="0" style="padding:20px;">
+                <tr>
+                  <td align="center">
+
+                    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:700px; background:#ffffff; border:1px solid #ddd;">
+
+                      <tr>
+                        <td style="padding:20px;">
+                          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f0f0f0; border-left:4px solid #2a4d8f;">
+                            
+                            <tr>
+                              <td style="padding:12px; font-size:16px; font-weight:bold; color:#2a4d8f;">
+                                Deployment Job Execution Status
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td style="padding:12px;">
+                                <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff; border:1px solid #ddd;">
+                                  
+                                  <tr>
+                                    <td style="padding:8px; font-weight:bold; color:#444;">Application:</td>
+                                    <td style="padding:8px;"><b>${{ env.COMPONENT_NAME }}</b></td>
+                                  </tr>
+
+                                  <tr>
+                                    <td style="padding:8px; font-weight:bold; color:#444;">Environment:</td>
+                                    <td style="padding:8px;"><b>${{ env.ENV }}</b></td>
+                                  </tr>
+
+                                  <tr>
+                                    <td style="padding:8px; font-weight:bold; color:#444;">Branch/Tag:</td>
+                                    <td style="padding:8px;"><b>${{ github.ref_name }}</b></td>
+                                  </tr>
+
+                                  <tr>
+                                    <td style="padding:8px; font-weight:bold; color:#444;">Result:</td>
+                                    <td style="padding:8px;">
+                                      <b style="color:${{ env.STATUS_COLOR }};">${{ env.STATUS }}</b>
+                                    </td>
+                                  </tr>
+
+                                </table>
+                              </td>
+                            </tr>
+
+                          </table>
+                        </td>
+                      </tr>
+
+                      <tr>
+                        <td style="padding:20px; font-size:14px;">
+                          <b>Console Output:</b>
+                          <a href="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" style="color:#1a73e8; font-weight:bold;">
+                            View Build Logs
+                          </a>
+                        </td>
+                      </tr>
+
+                      <tr>
+                        <td style="padding:15px; font-size:12px; color:#555; border-top:1px solid #ddd;">
+                          This message was generated automatically by the deployment system.
+                        </td>
+                      </tr>
+
+                    </table>
+
+                  </td>
+                </tr>
+              </table>
+
+            </body>
+            </html>
