@@ -48,9 +48,8 @@ jobs:
           subject: "Manual Notification: ${{ env.COMPONENT_NAME }} - ${{ env.STATUS }}"
           to: ${{ secrets.MAIL_USERNAME }}
           from: GitHub Actions
-          content_type: text/html
 
-          body: |
+          html_body: |
             <!DOCTYPE html>
             <html>
             <body style="margin:0; padding:0; background-color:#f4f4f4; font-family:Segoe UI, Roboto, Arial, sans-serif;">
