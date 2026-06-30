@@ -337,16 +337,50 @@ jobs:
           set_prop("sonar.sourceEncoding", "UTF-8")
           set_prop("sonar.scm.provider", "git")
           set_prop("sonar.qualitygate.wait", "true")
+          # Enterprise policy: bound how long the scanner waits on the
+          # quality gate and on web-service calls before failing the
+          # build, instead of hanging indefinitely (30 minutes).
+          set_prop("sonar.qualitygate.timeout", "1800")
+          set_prop("sonar.ws.timeout", "1800")
+
+          # SCM link metadata (best-effort, derived from the git remote)
+          try:
+              import subprocess
+              remote_url = subprocess.check_output(
+                  ["git", "config", "--get", "remote.origin.url"],
+                  cwd=REPO_ROOT, stderr=subprocess.DEVNULL,
+              ).decode().strip()
+              if remote_url:
+                  https_url = remote_url
+                  if https_url.startswith("git@"):
+                      https_url = https_url.replace(":", "/", 1).replace("git@", "https://", 1)
+                  https_url = https_url[:-4] if https_url.endswith(".git") else https_url
+                  set_prop("sonar.links.scm", https_url)
+                  set_prop("sonar.links.homepage", https_url)
+          except Exception:
+              pass
 
           exclusion_candidates = [
               "node_modules", "coverage", "dist", "build", "target", "vendor",
               "bin", "obj", ".next", ".nuxt", ".terraform", ".git", ".github",
           ]
           active_exclusions = [d for d in exclusion_candidates if dir_exists(d)]
-          glob_exclusions = ["**/*.min.js", "**/*.bundle.js", "**/*.map"]
+          glob_exclusions = [
+              "**/*.min.js", "**/*.bundle.js", "**/*.map",
+              "**/*.lock", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+          ]
           exclusion_patterns = [f"**/{d}/**" for d in active_exclusions] + glob_exclusions
           if exclusion_patterns:
               set_prop("sonar.exclusions", ",".join(exclusion_patterns))
+
+          # Enterprise policy: never let test/mock/spec code or generated
+          # code count toward the coverage metric, even if it happens to
+          # sit inside a "sources" path.
+          coverage_exclusion_patterns = [
+              "**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/__mocks__/**",
+              "**/test/**", "**/tests/**", "**/mocks/**", "**/fixtures/**",
+          ]
+          set_prop("sonar.coverage.exclusions", ",".join(coverage_exclusion_patterns))
 
           cpd_patterns = []
           for t in detected_tests:
@@ -355,6 +389,12 @@ jobs:
               cpd_patterns.append(gen)
           if cpd_patterns:
               set_prop("sonar.cpd.exclusions", ",".join(sorted(set(cpd_patterns))))
+
+          # Enterprise policy: deterministic, non-interactive, log-bounded
+          # scanner behaviour suitable for CI.
+          set_prop("sonar.verbose", "false")
+          set_prop("sonar.log.level", "INFO")
+          set_prop("sonar.scm.forceReloadAll", "false")
 
           # Merge in any existing custom keys that weren't recognized above
           for k, v in existing_props.items():
@@ -425,12 +465,18 @@ jobs:
               "sonar.go.coverage.reportPaths",
               "sonar.php.coverage.reportPaths",
               "sonar.cs.opencover.reportsPaths",
+              "sonar.coverage.exclusions",
           ])
           emit("Exclusions", ["sonar.exclusions"])
           emit("Duplication", ["sonar.cpd.exclusions"])
           emit("Encoding", ["sonar.sourceEncoding"])
-          emit("SCM", ["sonar.scm.provider"])
-          emit("Security / Quality Gate", ["sonar.qualitygate.wait"])
+          emit("SCM", ["sonar.scm.provider", "sonar.scm.forceReloadAll", "sonar.links.scm", "sonar.links.homepage"])
+          emit("Security / Quality Gate", [
+              "sonar.qualitygate.wait",
+              "sonar.qualitygate.timeout",
+              "sonar.ws.timeout",
+          ])
+          emit("CI / Logging", ["sonar.verbose", "sonar.log.level"])
 
           emitted_keys = {
               "sonar.projectKey", "sonar.projectName", "sonar.projectVersion",
@@ -438,8 +484,12 @@ jobs:
               "sonar.coverage.jacoco.xmlReportPaths", "sonar.javascript.lcov.reportPaths",
               "sonar.typescript.lcov.reportPaths", "sonar.python.coverage.reportPaths",
               "sonar.go.coverage.reportPaths", "sonar.php.coverage.reportPaths",
-              "sonar.cs.opencover.reportsPaths", "sonar.exclusions", "sonar.cpd.exclusions",
-              "sonar.sourceEncoding", "sonar.scm.provider", "sonar.qualitygate.wait",
+              "sonar.cs.opencover.reportsPaths", "sonar.coverage.exclusions",
+              "sonar.exclusions", "sonar.cpd.exclusions",
+              "sonar.sourceEncoding", "sonar.scm.provider", "sonar.scm.forceReloadAll",
+              "sonar.links.scm", "sonar.links.homepage",
+              "sonar.qualitygate.wait", "sonar.qualitygate.timeout", "sonar.ws.timeout",
+              "sonar.verbose", "sonar.log.level",
           }
           leftover = {k: v for k, v in props.items() if k not in emitted_keys}
           if leftover:
