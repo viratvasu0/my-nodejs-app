@@ -1,0 +1,528 @@
+name: Enterprise Sonar Onboarding
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sonar-onboarding:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create output directory
+        run: mkdir -p output
+
+      - name: Generate sonar-project.properties
+        shell: python
+        run: |
+          import os
+          import re
+          import glob
+
+          REPO_ROOT = os.getcwd()
+          REPO_NAME = os.path.basename(REPO_ROOT.rstrip("/"))
+
+          # ------------------------------------------------------------
+          # Directories to skip while walking the repository
+          # ------------------------------------------------------------
+          SKIP_DIRS = {
+              ".git", ".github", "node_modules", "dist", "build", "target",
+              "vendor", "bin", "obj", ".next", ".nuxt", ".terraform",
+              "coverage", "__pycache__", ".venv", "venv", ".idea", ".vscode",
+          }
+
+          def walk_repo():
+              for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+                  dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                  rel_dir = os.path.relpath(dirpath, REPO_ROOT)
+                  yield rel_dir, dirnames, filenames
+
+          all_files = []
+          all_dirs = set()
+          for rel_dir, dirnames, filenames in walk_repo():
+              if rel_dir == ".":
+                  rel_dir = ""
+              all_dirs.add(rel_dir)
+              for f in filenames:
+                  all_files.append(os.path.join(rel_dir, f) if rel_dir else f)
+
+          def exists_any(*candidates):
+              for c in candidates:
+                  for f in all_files:
+                      if f == c or f.endswith("/" + c) or os.path.basename(f) == c:
+                          return True
+              return False
+
+          def dir_exists(*candidates):
+              for c in candidates:
+                  for d in all_dirs:
+                      if d == c or d.endswith("/" + c):
+                          return True
+              return False
+
+          def find_files_with_ext(*exts):
+              found = []
+              for f in all_files:
+                  for e in exts:
+                      if f.endswith(e):
+                          found.append(f)
+              return found
+
+          # ------------------------------------------------------------
+          # Language detection (by extension)
+          # ------------------------------------------------------------
+          LANGUAGE_EXTENSIONS = {
+              "Java": [".java"],
+              "Kotlin": [".kt", ".kts"],
+              "Groovy": [".groovy", ".gradle"],
+              "Scala": [".scala"],
+              "JavaScript": [".js", ".jsx", ".mjs", ".cjs"],
+              "TypeScript": [".ts", ".tsx"],
+              "Python": [".py"],
+              "Go": [".go"],
+              "Rust": [".rs"],
+              "PHP": [".php"],
+              "Ruby": [".rb"],
+              "C#": [".cs"],
+              "C": [".c", ".h"],
+              "C++": [".cpp", ".cc", ".cxx", ".hpp"],
+              "Terraform": [".tf"],
+              "Helm": [".yaml", ".yml"],
+              "Shell": [".sh"],
+              "HTML": [".html", ".htm"],
+              "CSS": [".css", ".scss", ".sass", ".less"],
+          }
+
+          detected_languages = set()
+          for lang, exts in LANGUAGE_EXTENSIONS.items():
+              if lang == "Helm":
+                  if any("chart.yaml" in f.lower() or "templates" in f.lower() for f in all_files):
+                      detected_languages.add("Helm")
+                  continue
+              if find_files_with_ext(*exts):
+                  detected_languages.add(lang)
+
+          # ------------------------------------------------------------
+          # Build tool detection
+          # ------------------------------------------------------------
+          build_tools = []
+          if exists_any("pom.xml"):
+              build_tools.append("maven")
+          if exists_any("build.gradle"):
+              build_tools.append("gradle")
+          if exists_any("build.gradle.kts"):
+              build_tools.append("gradle-kotlin")
+          if exists_any("package.json"):
+              build_tools.append("npm")
+          if exists_any("yarn.lock"):
+              build_tools.append("yarn")
+          if exists_any("pnpm-lock.yaml"):
+              build_tools.append("pnpm")
+          if exists_any("requirements.txt"):
+              build_tools.append("pip")
+          if exists_any("pyproject.toml"):
+              build_tools.append("poetry/pep517")
+          if exists_any("Pipfile"):
+              build_tools.append("pipenv")
+          if exists_any("go.mod"):
+              build_tools.append("go-modules")
+          if exists_any("Cargo.toml"):
+              build_tools.append("cargo")
+          if exists_any("composer.json"):
+              build_tools.append("composer")
+          if exists_any("Gemfile"):
+              build_tools.append("bundler")
+          if find_files_with_ext(".csproj"):
+              build_tools.append("dotnet-csproj")
+          if find_files_with_ext(".sln"):
+              build_tools.append("dotnet-sln")
+
+          # ------------------------------------------------------------
+          # Framework detection (lightweight heuristics on package.json
+          # and known config / dependency files)
+          # ------------------------------------------------------------
+          frameworks = []
+
+          def read_text(path, limit=200000):
+              full = os.path.join(REPO_ROOT, path)
+              try:
+                  with open(full, "r", encoding="utf-8", errors="ignore") as fh:
+                      return fh.read(limit)
+              except Exception:
+                  return ""
+
+          pkg_json_text = ""
+          for f in all_files:
+              if os.path.basename(f) == "package.json" and f.count("/") <= 1:
+                  pkg_json_text = read_text(f)
+                  break
+
+          pkg_json_lower = pkg_json_text.lower()
+          js_framework_map = {
+              "Next.js": ["\"next\""],
+              "Nuxt": ["\"nuxt\""],
+              "React": ["\"react\""],
+              "Angular": ["\"@angular/core\""],
+              "Vue": ["\"vue\""],
+              "Express": ["\"express\""],
+              "NestJS": ["\"@nestjs/core\""],
+          }
+          for fw, markers in js_framework_map.items():
+              if any(m in pkg_json_lower for m in markers):
+                  frameworks.append(fw)
+
+          pom_text = read_text("pom.xml")
+          gradle_text = read_text("build.gradle") + read_text("build.gradle.kts")
+          java_build_text = (pom_text + gradle_text).lower()
+          if "spring-boot" in java_build_text or "springframework.boot" in java_build_text:
+              frameworks.append("Spring Boot")
+          if "quarkus" in java_build_text:
+              frameworks.append("Quarkus")
+          if "micronaut" in java_build_text:
+              frameworks.append("Micronaut")
+
+          req_text = read_text("requirements.txt").lower()
+          pyproject_text = read_text("pyproject.toml").lower()
+          py_deps_text = req_text + pyproject_text
+          if "django" in py_deps_text:
+              frameworks.append("Django")
+          if "flask" in py_deps_text:
+              frameworks.append("Flask")
+          if "fastapi" in py_deps_text:
+              frameworks.append("FastAPI")
+
+          for f in all_files:
+              base = os.path.basename(f).lower()
+              if base.endswith(".csproj"):
+                  text = read_text(f).lower()
+                  if "microsoft.aspnetcore" in text:
+                      frameworks.append("ASP.NET Core")
+
+          composer_text = read_text("composer.json").lower()
+          if "laravel/framework" in composer_text:
+              frameworks.append("Laravel")
+          if "symfony/" in composer_text:
+              frameworks.append("Symfony")
+
+          frameworks = sorted(set(frameworks))
+
+          # ------------------------------------------------------------
+          # Source directory detection
+          # ------------------------------------------------------------
+          SOURCE_CANDIDATES = [
+              "src/main/java", "src/main/kotlin", "src",
+              "app", "backend", "frontend", "functions",
+              "lambda", "services", "packages", "libs",
+          ]
+          detected_sources = [c for c in SOURCE_CANDIDATES if dir_exists(c)]
+          # Remove redundant parents when a more specific child already exists
+          if "src/main/java" in detected_sources or "src/main/kotlin" in detected_sources:
+              detected_sources = [s for s in detected_sources if s != "src"] or detected_sources
+          if not detected_sources:
+              # Fallback: repository root
+              detected_sources = ["."]
+
+          # ------------------------------------------------------------
+          # Test directory detection
+          # ------------------------------------------------------------
+          TEST_CANDIDATES = [
+              "src/test/java", "src/test/kotlin", "src/test",
+              "tests", "test", "__tests__", "spec",
+          ]
+          detected_tests = [c for c in TEST_CANDIDATES if dir_exists(c)]
+
+          # ------------------------------------------------------------
+          # Coverage report detection
+          # ------------------------------------------------------------
+          COVERAGE_CANDIDATES = {
+              "coverage/lcov.info": "lcov",
+              "coverage.xml": "python-coverage",
+              "target/site/jacoco/jacoco.xml": "jacoco",
+              "build/reports/jacoco/test/jacocoTestReport.xml": "jacoco",
+              "coverage.out": "go-coverage",
+              ".opencover.xml": "opencover",
+          }
+          found_coverage = {}
+          for cand, kind in COVERAGE_CANDIDATES.items():
+              for f in all_files:
+                  if f == cand or f.endswith("/" + cand):
+                      found_coverage[cand] = kind
+                      break
+
+          # ------------------------------------------------------------
+          # Existing sonar-project.properties (merge, never overwrite)
+          # ------------------------------------------------------------
+          existing_props = {}
+          existing_path = None
+          for f in all_files:
+              if os.path.basename(f) == "sonar-project.properties":
+                  existing_path = f
+                  break
+
+          if existing_path:
+              text = read_text(existing_path)
+              for line in text.splitlines():
+                  line = line.strip()
+                  if not line or line.startswith("#"):
+                      continue
+                  if "=" in line:
+                      k, v = line.split("=", 1)
+                      existing_props[k.strip()] = v.strip()
+
+          # ------------------------------------------------------------
+          # Build the property set (without overwriting existing values)
+          # ------------------------------------------------------------
+          props = {}
+
+          def set_prop(key, value):
+              # Never overwrite a value that already exists in the
+              # repository's own sonar-project.properties file.
+              if key in existing_props:
+                  props[key] = existing_props[key]
+              else:
+                  props[key] = value
+
+          project_key = re.sub(r"[^A-Za-z0-9_.\-:]", "-", REPO_NAME)
+          set_prop("sonar.projectKey", project_key)
+          set_prop("sonar.projectName", REPO_NAME)
+          set_prop("sonar.projectVersion", "1.0")
+
+          set_prop("sonar.sources", ",".join(detected_sources))
+          if detected_tests:
+              set_prop("sonar.tests", ",".join(detected_tests))
+              set_prop("sonar.test.inclusions", "**/*Test*,**/*Spec*,**/*test*,**/*spec*")
+
+          # Coverage property selection — language-specific, only emit
+          # when the corresponding report actually exists in the repo.
+          if "Java" in detected_languages or "Kotlin" in detected_languages:
+              jacoco_paths = [c for c, k in found_coverage.items() if k == "jacoco"]
+              if jacoco_paths:
+                  set_prop("sonar.coverage.jacoco.xmlReportPaths", ",".join(jacoco_paths))
+
+          if "JavaScript" in detected_languages or "TypeScript" in detected_languages:
+              if "coverage/lcov.info" in found_coverage:
+                  set_prop("sonar.javascript.lcov.reportPaths", "coverage/lcov.info")
+                  if "TypeScript" in detected_languages:
+                      set_prop("sonar.typescript.lcov.reportPaths", "coverage/lcov.info")
+
+          if "Python" in detected_languages:
+              if "coverage.xml" in found_coverage:
+                  set_prop("sonar.python.coverage.reportPaths", "coverage.xml")
+
+          if "Go" in detected_languages:
+              if "coverage.out" in found_coverage:
+                  set_prop("sonar.go.coverage.reportPaths", "coverage.out")
+
+          if "PHP" in detected_languages:
+              if "coverage.xml" in found_coverage:
+                  set_prop("sonar.php.coverage.reportPaths", "coverage.xml")
+
+          if "C#" in detected_languages:
+              if ".opencover.xml" in found_coverage:
+                  set_prop("sonar.cs.opencover.reportsPaths", ".opencover.xml")
+
+          set_prop("sonar.sourceEncoding", "UTF-8")
+          set_prop("sonar.scm.provider", "git")
+          set_prop("sonar.qualitygate.wait", "true")
+          # Enterprise policy: bound how long the scanner waits on the
+          # quality gate and on web-service calls before failing the
+          # build, instead of hanging indefinitely (30 minutes).
+          set_prop("sonar.qualitygate.timeout", "1800")
+          set_prop("sonar.ws.timeout", "1800")
+
+          # SCM link metadata (best-effort, derived from the git remote)
+          try:
+              import subprocess
+              remote_url = subprocess.check_output(
+                  ["git", "config", "--get", "remote.origin.url"],
+                  cwd=REPO_ROOT, stderr=subprocess.DEVNULL,
+              ).decode().strip()
+              if remote_url:
+                  https_url = remote_url
+                  if https_url.startswith("git@"):
+                      https_url = https_url.replace(":", "/", 1).replace("git@", "https://", 1)
+                  https_url = https_url[:-4] if https_url.endswith(".git") else https_url
+                  set_prop("sonar.links.scm", https_url)
+                  set_prop("sonar.links.homepage", https_url)
+          except Exception:
+              pass
+
+          exclusion_candidates = [
+              "node_modules", "coverage", "dist", "build", "target", "vendor",
+              "bin", "obj", ".next", ".nuxt", ".terraform", ".git", ".github",
+          ]
+          active_exclusions = [d for d in exclusion_candidates if dir_exists(d)]
+          glob_exclusions = [
+              "**/*.min.js", "**/*.bundle.js", "**/*.map",
+              "**/*.lock", "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+          ]
+          exclusion_patterns = [f"**/{d}/**" for d in active_exclusions] + glob_exclusions
+          if exclusion_patterns:
+              set_prop("sonar.exclusions", ",".join(exclusion_patterns))
+
+          # Enterprise policy: never let test/mock/spec code or generated
+          # code count toward the coverage metric, even if it happens to
+          # sit inside a "sources" path.
+          coverage_exclusion_patterns = [
+              "**/*.test.*", "**/*.spec.*", "**/__tests__/**", "**/__mocks__/**",
+              "**/test/**", "**/tests/**", "**/mocks/**", "**/fixtures/**",
+          ]
+          set_prop("sonar.coverage.exclusions", ",".join(coverage_exclusion_patterns))
+
+          cpd_patterns = []
+          for t in detected_tests:
+              cpd_patterns.append(f"**/{t}/**")
+          for gen in ["**/generated/**", "**/*.generated.*", "**/target/generated-sources/**"]:
+              cpd_patterns.append(gen)
+          if cpd_patterns:
+              set_prop("sonar.cpd.exclusions", ",".join(sorted(set(cpd_patterns))))
+
+          # Enterprise policy: deterministic, non-interactive, log-bounded
+          # scanner behaviour suitable for CI.
+          set_prop("sonar.verbose", "false")
+          set_prop("sonar.log.level", "INFO")
+          set_prop("sonar.scm.forceReloadAll", "false")
+
+          # Merge in any existing custom keys that weren't recognized above
+          for k, v in existing_props.items():
+              if k not in props:
+                  props[k] = v
+
+          # ------------------------------------------------------------
+          # Validation
+          # ------------------------------------------------------------
+          validation_notes = []
+          for s in detected_sources:
+              if s != "." and not dir_exists(s):
+                  validation_notes.append(f"WARNING: source path '{s}' not found")
+          for t in detected_tests:
+              if not dir_exists(t):
+                  validation_notes.append(f"WARNING: test path '{t}' not found")
+          for cand in found_coverage:
+              if not exists_any(cand):
+                  validation_notes.append(f"WARNING: coverage report '{cand}' not found")
+          seen_keys = set()
+          for k in props:
+              if k in seen_keys:
+                  validation_notes.append(f"WARNING: duplicate property '{k}'")
+              seen_keys.add(k)
+
+          # ------------------------------------------------------------
+          # Render the properties file
+          # ------------------------------------------------------------
+          def section(title):
+              bar = "#" * 59
+              return f"{bar}\n# {title}\n{bar}\n"
+
+          lines = []
+          lines.append(f"# Generated by Enterprise Sonar Onboarding workflow")
+          lines.append(f"# Repository: {REPO_NAME}")
+          if detected_languages:
+              lines.append(f"# Detected languages: {', '.join(sorted(detected_languages))}")
+          if build_tools:
+              lines.append(f"# Detected build tools: {', '.join(build_tools)}")
+          if frameworks:
+              lines.append(f"# Detected frameworks: {', '.join(frameworks)}")
+          if validation_notes:
+              lines.append("#")
+              lines.append("# Validation notes:")
+              for note in validation_notes:
+                  lines.append(f"#   {note}")
+          lines.append("")
+
+          def emit(title, keys):
+              block = [section(title)]
+              any_emitted = False
+              for k in keys:
+                  if k in props:
+                      block.append(f"{k}={props[k]}")
+                      any_emitted = True
+              block.append("")
+              if any_emitted:
+                  lines.extend(block)
+
+          emit("Project Information", ["sonar.projectKey", "sonar.projectName", "sonar.projectVersion"])
+          emit("Source", ["sonar.sources"])
+          emit("Tests", ["sonar.tests", "sonar.test.inclusions"])
+          emit("Coverage", [
+              "sonar.coverage.jacoco.xmlReportPaths",
+              "sonar.javascript.lcov.reportPaths",
+              "sonar.typescript.lcov.reportPaths",
+              "sonar.python.coverage.reportPaths",
+              "sonar.go.coverage.reportPaths",
+              "sonar.php.coverage.reportPaths",
+              "sonar.cs.opencover.reportsPaths",
+              "sonar.coverage.exclusions",
+          ])
+          emit("Exclusions", ["sonar.exclusions"])
+          emit("Duplication", ["sonar.cpd.exclusions"])
+          emit("Encoding", ["sonar.sourceEncoding"])
+          emit("SCM", ["sonar.scm.provider", "sonar.scm.forceReloadAll", "sonar.links.scm", "sonar.links.homepage"])
+          emit("Security / Quality Gate", [
+              "sonar.qualitygate.wait",
+              "sonar.qualitygate.timeout",
+              "sonar.ws.timeout",
+          ])
+          emit("CI / Logging", ["sonar.verbose", "sonar.log.level"])
+
+          emitted_keys = {
+              "sonar.projectKey", "sonar.projectName", "sonar.projectVersion",
+              "sonar.sources", "sonar.tests", "sonar.test.inclusions",
+              "sonar.coverage.jacoco.xmlReportPaths", "sonar.javascript.lcov.reportPaths",
+              "sonar.typescript.lcov.reportPaths", "sonar.python.coverage.reportPaths",
+              "sonar.go.coverage.reportPaths", "sonar.php.coverage.reportPaths",
+              "sonar.cs.opencover.reportsPaths", "sonar.coverage.exclusions",
+              "sonar.exclusions", "sonar.cpd.exclusions",
+              "sonar.sourceEncoding", "sonar.scm.provider", "sonar.scm.forceReloadAll",
+              "sonar.links.scm", "sonar.links.homepage",
+              "sonar.qualitygate.wait", "sonar.qualitygate.timeout", "sonar.ws.timeout",
+              "sonar.verbose", "sonar.log.level",
+          }
+          leftover = {k: v for k, v in props.items() if k not in emitted_keys}
+          if leftover:
+              lines.append(section("Custom / Pre-existing Properties"))
+              for k, v in leftover.items():
+                  lines.append(f"{k}={v}")
+              lines.append("")
+
+          output_content = "\n".join(lines).rstrip() + "\n"
+
+          safe_repo_name = re.sub(r"[^A-Za-z0-9_.\-]", "-", REPO_NAME)
+          output_filename = f"{safe_repo_name}-sonar-project.properties"
+          output_path = os.path.join("output", output_filename)
+
+          with open(output_path, "w", encoding="utf-8") as fh:
+              fh.write(output_content)
+
+          print(f"Generated: {output_path}")
+          print(f"Detected languages: {sorted(detected_languages)}")
+          print(f"Detected build tools: {build_tools}")
+          print(f"Detected frameworks: {frameworks}")
+          print(f"Detected sources: {detected_sources}")
+          print(f"Detected tests: {detected_tests}")
+          print(f"Detected coverage reports: {list(found_coverage.keys())}")
+          if validation_notes:
+              print("Validation notes:")
+              for note in validation_notes:
+                  print(f"  {note}")
+
+      - name: Upload sonar-project.properties artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-project-properties
+          path: output/*-sonar-project.properties
+          if-no-files-found: error
+          retention-days: 30
