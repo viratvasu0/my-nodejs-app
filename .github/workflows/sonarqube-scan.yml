@@ -1,0 +1,47 @@
+name: SonarQube Scan
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  VAULT_ADDR: https://vault.wm.com
+  VAULT_JWT_PATH: jwt/github-public
+  VAULT_ROLE: devops-wm-operations-sustainability-shared-reader
+
+jobs:
+  sonarqube:
+    name: SonarQube Scan
+    runs-on: wm-cloud-arc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get SonarQube credentials from Vault
+        uses: hashicorp/vault-action@v4
+        id: vault
+        with:
+          url: ${{ env.VAULT_ADDR }}
+          method: jwt
+          path: ${{ env.VAULT_JWT_PATH }}
+          role: ${{ env.VAULT_ROLE }}
+          exportEnv: true
+          secrets: |
+            devops/shared/data/sonarqube token | SONARQUBE_TOKEN ;
+            devops/shared/data/sonarqube host | SONARQUBE_HOST
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8
+        env:
+          SONAR_TOKEN: ${{ env.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONARQUBE_HOST }}
